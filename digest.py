@@ -2,12 +2,14 @@ import os
 import re
 import json
 import httpx
+from datetime import datetime, timezone
 
 RAPIDAPI_KEY = os.environ["RAPIDAPI_KEY"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 SENDGRID_API_KEY = os.environ["SENDGRID_API_KEY"]
 FROM_EMAIL = os.environ["FROM_EMAIL"]
 TO_EMAIL = os.environ["TO_EMAIL"]
+PAGES_URL = os.environ.get("PAGES_URL", "")
 
 TARGET_COMPANIES = ["Toro","Polaris","Graco","Donaldson","Medtronic",
                      "Boston Scientific","3M","Stratasys","Proto Labs","TSI"]
@@ -123,7 +125,15 @@ Return ONLY the JSON array."""
             print("Parse error:", e)
         return jobs
 
-def build_email_html(top_jobs, new_count):
+def badge_color(score):
+    if score >= 80:
+        return "#EAF3DE", "#27500A"
+    elif score >= 60:
+        return "#FAEEDA", "#633806"
+    else:
+        return "#FCEBEB", "#791F1F"
+
+def build_email_html(top_jobs, new_count, pages_url):
     rows = ""
     for j in top_jobs:
         target_badge = ' <span style="background:#EEEDFE;color:#3C3489;font-size:11px;padding:2px 8px;border-radius:10px;margin-left:6px">Target co.</span>' if j.get("is_target_company") else ""
@@ -138,13 +148,65 @@ def build_email_html(top_jobs, new_count):
           <a href="{j['apply_url']}" style="background:#1a1a18;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-size:13px">Apply now</a>
         </div>"""
 
+    view_all_link = ""
+    if pages_url:
+        view_all_link = f"""
+        <div style="background:#f5f5f0;border-radius:12px;padding:14px 16px;margin-bottom:20px;text-align:center">
+          <a href="{pages_url}" style="color:#1a1a18;font-size:14px;font-weight:600;text-decoration:none">
+            View all {new_count} jobs found this week &rarr;
+          </a>
+        </div>"""
+
     return f"""
     <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:600px;margin:0 auto">
       <h2 style="color:#1a1a18">Your weekly job digest</h2>
-      <p style="color:#888780;font-size:14px">{new_count} new listings found this week. Here are your top matches:</p>
+      <p style="color:#888780;font-size:14px">{new_count} listings found this week. Here are your top {len(top_jobs)} matches:</p>
+      {view_all_link}
       {rows}
       <p style="color:#b4b2a9;font-size:12px;margin-top:20px">Sent automatically by your job search agent.</p>
     </div>"""
+
+def build_full_page_html(all_jobs):
+    sorted_jobs = sorted(all_jobs, key=lambda j: j.get("score", 0), reverse=True)
+    now = datetime.now(timezone.utc).strftime("%B %d, %Y at %I:%M %p UTC")
+
+    cards = ""
+    for j in sorted_jobs:
+        bg, fg = badge_color(j.get("score", 0))
+        target_badge = f'<span style="background:#EEEDFE;color:#3C3489;font-size:11px;padding:2px 9px;border-radius:12px;margin-left:8px">Target company</span>' if j.get("is_target_company") else ""
+        cards += f"""
+        <div style="background:#fff;border:1px solid #dddbd0;border-radius:12px;padding:18px 20px;margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+            <div>
+              <div style="font-size:16px;font-weight:600;color:#1a1a18">{j['title']}{target_badge}</div>
+              <div style="font-size:13px;color:#888780;margin:2px 0 8px">{j['company']} &middot; {j['location']}</div>
+              <div style="font-size:13px;color:#1a1a18">
+                {j['salary']} &nbsp;|&nbsp; ~{j.get('commuteMi','?')} mi from Minnetrista &nbsp;|&nbsp; Posted {j.get('posted') or 'recently'}
+              </div>
+            </div>
+            <span style="background:{bg};color:{fg};font-size:13px;font-weight:600;padding:4px 12px;border-radius:14px;white-space:nowrap">
+              {j.get('score','?')}/100
+            </span>
+          </div>
+          <div style="font-size:13px;color:#5f5e5a;font-style:italic;margin:10px 0">{j.get('whyFit','')}</div>
+          <a href="{j['apply_url']}" style="color:#1a1a18;font-size:13px;font-weight:600;text-decoration:underline">Apply now &rarr;</a>
+        </div>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weekly job listings</title>
+</head>
+<body style="font-family:-apple-system,Segoe UI,sans-serif;background:#f5f5f0;margin:0;padding:2rem 1rem">
+  <div style="max-width:700px;margin:0 auto">
+    <h1 style="color:#1a1a18;font-size:22px">All jobs found this week</h1>
+    <p style="color:#888780;font-size:13px;margin-bottom:24px">{len(sorted_jobs)} listings &middot; Last updated {now}</p>
+    {cards}
+  </div>
+</body>
+</html>"""
 
 def send_email(html_content, job_count):
     with httpx.Client(timeout=30.0) as client:
@@ -179,10 +241,17 @@ def main():
 
     top_jobs = sorted(jobs, key=lambda j: j.get("score", 0), reverse=True)[:10]
 
+    print("Building full listings page...")
+    os.makedirs("docs", exist_ok=True)
+    full_page = build_full_page_html(jobs)
+    with open("docs/index.html", "w", encoding="utf-8") as f:
+        f.write(full_page)
+
     print("Sending email...")
-    html = build_email_html(top_jobs, len(jobs))
-    send_email(html, len(top_jobs))
+    email_html = build_email_html(top_jobs, len(jobs), PAGES_URL)
+    send_email(email_html, len(top_jobs))
     print("Done!")
 
 if __name__ == "__main__":
     main()
+      
