@@ -30,7 +30,7 @@ jobs:
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
           TO_EMAIL: ${{ secrets.TO_EMAIL }}
-          PAGES_URL: https://pbizzle123.github.io/job-search-digest/
+          PAGES_URL: https://pbizzle123.github.io/Job-Search-Digest/
         run: python digest.py
 
       - name: Commit and push job listings page
