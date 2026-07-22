@@ -28,7 +28,6 @@ QUERIES = [
     "test validation engineer Minnesota",
     "supplier quality engineer Minnesota",
     "product engineer Minnesota",
-    "cost engineer Minnesota",
     "R&D engineer Minnesota",
     "NPI engineer Minnesota",
     "development engineer Minnesota",
