@@ -11,6 +11,8 @@ FROM_EMAIL = os.environ["FROM_EMAIL"]
 TO_EMAIL = os.environ["TO_EMAIL"]
 PAGES_URL = os.environ.get("PAGES_URL", "")
 
+SEEN_JOBS_PATH = "data/seen_jobs.json"
+
 TARGET_COMPANIES = ["Toro","Polaris","Graco","Donaldson","Medtronic",
                      "Boston Scientific","3M","Stratasys","Proto Labs","TSI"]
 
@@ -23,6 +25,21 @@ QUERIES = [
     "process engineer Minnesota",
     "application engineer Minnesota"
 ]
+
+def load_seen_jobs():
+    if not os.path.exists(SEEN_JOBS_PATH):
+        return {}
+    try:
+        with open(SEEN_JOBS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Could not read seen jobs file: {e}")
+        return {}
+
+def save_seen_jobs(seen):
+    os.makedirs("data", exist_ok=True)
+    with open(SEEN_JOBS_PATH, "w", encoding="utf-8") as f:
+        json.dump(seen, f, indent=2)
 
 def fetch_jobs():
     all_jobs = []
@@ -48,7 +65,7 @@ def fetch_jobs():
                 data = resp.json()
                 for job in data.get("data", []):
                     job_id = job.get("job_id", "")
-                    if job_id in seen_ids:
+                    if not job_id or job_id in seen_ids:
                         continue
                     seen_ids.add(job_id)
                     salary_min = job.get("job_min_salary")
@@ -58,6 +75,7 @@ def fetch_jobs():
                     highlights = job.get("job_highlights", {})
                     company = job.get("employer_name", "")
                     all_jobs.append({
+                        "job_id": job_id,
                         "title": job.get("job_title", ""),
                         "company": company,
                         "location": f"{job.get('job_city','Minneapolis')}, {job.get('job_state','MN')}",
@@ -71,6 +89,18 @@ def fetch_jobs():
             except Exception as e:
                 print(f"Error fetching '{q}': {e}")
     return all_jobs
+
+def mark_new_jobs(jobs, seen):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    new_count = 0
+    for j in jobs:
+        if j["job_id"] not in seen:
+            j["is_new"] = True
+            seen[j["job_id"]] = today
+            new_count += 1
+        else:
+            j["is_new"] = False
+    return new_count
 
 def score_jobs(jobs):
     jobs_summary = "\n".join(
@@ -133,13 +163,23 @@ def badge_color(score):
     else:
         return "#FCEBEB", "#791F1F"
 
-def build_email_html(top_jobs, new_count, pages_url):
+def new_badge_html():
+    return '<span style="background:#EAF3DE;color:#27500A;font-size:11px;padding:2px 9px;border-radius:12px;margin-left:8px">New</span>'
+
+def target_badge_html():
+    return '<span style="background:#EEEDFE;color:#3C3489;font-size:11px;padding:2px 9px;border-radius:12px;margin-left:8px">Target company</span>'
+
+def build_email_html(top_jobs, total_count, new_jobs_count, pages_url):
     rows = ""
     for j in top_jobs:
-        target_badge = ' <span style="background:#EEEDFE;color:#3C3489;font-size:11px;padding:2px 8px;border-radius:10px;margin-left:6px">Target co.</span>' if j.get("is_target_company") else ""
+        badges = ""
+        if j.get("is_target_company"):
+            badges += target_badge_html()
+        if j.get("is_new"):
+            badges += new_badge_html()
         rows += f"""
         <div style="border:1px solid #dddbd0;border-radius:12px;padding:16px;margin-bottom:12px">
-          <div style="font-size:16px;font-weight:600;color:#1a1a18">{j['title']}{target_badge}</div>
+          <div style="font-size:16px;font-weight:600;color:#1a1a18">{j['title']}{badges}</div>
           <div style="font-size:13px;color:#888780;margin-bottom:8px">{j['company']} &middot; {j['location']}</div>
           <div style="font-size:13px;color:#1a1a18;margin-bottom:6px">
             Salary: {j['salary']} &nbsp;|&nbsp; Commute: ~{j.get('commuteMi','?')} mi &nbsp;|&nbsp; Score: {j.get('score','?')}/100
@@ -153,14 +193,14 @@ def build_email_html(top_jobs, new_count, pages_url):
         view_all_link = f"""
         <div style="background:#f5f5f0;border-radius:12px;padding:14px 16px;margin-bottom:20px;text-align:center">
           <a href="{pages_url}" style="color:#1a1a18;font-size:14px;font-weight:600;text-decoration:none">
-            View all {new_count} jobs found this week &rarr;
+            View all {total_count} jobs found this week &rarr;
           </a>
         </div>"""
 
     return f"""
     <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:600px;margin:0 auto">
       <h2 style="color:#1a1a18">Your weekly job digest</h2>
-      <p style="color:#888780;font-size:14px">{new_count} listings found this week. Here are your top {len(top_jobs)} matches:</p>
+      <p style="color:#888780;font-size:14px">{new_jobs_count} new listing{"s" if new_jobs_count != 1 else ""} since last check &middot; {total_count} total open positions found. Here are your top {len(top_jobs)} matches:</p>
       {view_all_link}
       {rows}
       <p style="color:#b4b2a9;font-size:12px;margin-top:20px">Sent automatically by your job search agent.</p>
@@ -169,16 +209,21 @@ def build_email_html(top_jobs, new_count, pages_url):
 def build_full_page_html(all_jobs):
     sorted_jobs = sorted(all_jobs, key=lambda j: j.get("score", 0), reverse=True)
     now = datetime.now(timezone.utc).strftime("%B %d, %Y at %I:%M %p UTC")
+    new_count = sum(1 for j in sorted_jobs if j.get("is_new"))
 
     cards = ""
     for j in sorted_jobs:
         bg, fg = badge_color(j.get("score", 0))
-        target_badge = f'<span style="background:#EEEDFE;color:#3C3489;font-size:11px;padding:2px 9px;border-radius:12px;margin-left:8px">Target company</span>' if j.get("is_target_company") else ""
+        badges = ""
+        if j.get("is_target_company"):
+            badges += target_badge_html()
+        if j.get("is_new"):
+            badges += new_badge_html()
         cards += f"""
         <div style="background:#fff;border:1px solid #dddbd0;border-radius:12px;padding:18px 20px;margin-bottom:12px">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
             <div>
-              <div style="font-size:16px;font-weight:600;color:#1a1a18">{j['title']}{target_badge}</div>
+              <div style="font-size:16px;font-weight:600;color:#1a1a18">{j['title']}{badges}</div>
               <div style="font-size:13px;color:#888780;margin:2px 0 8px">{j['company']} &middot; {j['location']}</div>
               <div style="font-size:13px;color:#1a1a18">
                 {j['salary']} &nbsp;|&nbsp; ~{j.get('commuteMi','?')} mi from Minnetrista &nbsp;|&nbsp; Posted {j.get('posted') or 'recently'}
@@ -202,7 +247,7 @@ def build_full_page_html(all_jobs):
 <body style="font-family:-apple-system,Segoe UI,sans-serif;background:#f5f5f0;margin:0;padding:2rem 1rem">
   <div style="max-width:700px;margin:0 auto">
     <h1 style="color:#1a1a18;font-size:22px">All jobs found this week</h1>
-    <p style="color:#888780;font-size:13px;margin-bottom:24px">{len(sorted_jobs)} listings &middot; Last updated {now}</p>
+    <p style="color:#888780;font-size:13px;margin-bottom:24px">{len(sorted_jobs)} listings ({new_count} new) &middot; Last updated {now}</p>
     {cards}
   </div>
 </body>
@@ -236,6 +281,12 @@ def main():
         print("No jobs found, skipping email")
         return
 
+    print("Checking for new vs. previously seen jobs...")
+    seen = load_seen_jobs()
+    new_jobs_count = mark_new_jobs(jobs, seen)
+    save_seen_jobs(seen)
+    print(f"{new_jobs_count} new jobs since last run")
+
     print("Scoring jobs with Claude...")
     jobs = score_jobs(jobs)
 
@@ -248,7 +299,7 @@ def main():
         f.write(full_page)
 
     print("Sending email...")
-    email_html = build_email_html(top_jobs, len(jobs), PAGES_URL)
+    email_html = build_email_html(top_jobs, len(jobs), new_jobs_count, PAGES_URL)
     send_email(email_html, len(top_jobs))
     print("Done!")
 
