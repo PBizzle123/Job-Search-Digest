@@ -23,7 +23,15 @@ QUERIES = [
     "manufacturing engineer Minnesota",
     "design engineer Minnesota",
     "process engineer Minnesota",
-    "application engineer Minnesota"
+    "application engineer Minnesota",
+    "test validation engineer Minnesota",
+    "supplier quality engineer Minnesota",
+    "product engineer Minnesota",
+    "cost engineer Minnesota",
+    "R&D engineer Minnesota",
+    "NPI engineer Minnesota",
+    "development engineer Minnesota",
+    "test engineer Minnesota"
 ]
 
 def load_seen_jobs():
@@ -44,7 +52,7 @@ def save_seen_jobs(seen):
 def fetch_jobs():
     all_jobs = []
     seen_ids = set()
-    with httpx.Client(timeout=60.0) as client:
+    with httpx.Client(timeout=90.0) as client:
         for q in QUERIES:
             try:
                 resp = client.get(
@@ -58,7 +66,7 @@ def fetch_jobs():
                         "location": "Minneapolis, Minnesota, United States",
                         "distance": "30",
                         "page": "1",
-                        "num_results": "10",
+                        "num_results": "20",
                         "employment_types": "FULLTIME"
                     }
                 )
@@ -118,7 +126,7 @@ Respond ONLY with a valid JSON array, no markdown, no explanation."""
 {jobs_summary}
 
 Each object: {{"score": number 0-100, "commuteMi": "estimate", "whyFit": "1 sentence why this fits Peter"}}
-Scoring: title matches (Mechanical/Design/Quality/Manufacturing/Product Development/Application/Process Engineer) +30, target company (Toro/Polaris/Graco/Donaldson/Medtronic/Boston Scientific/3M/Stratasys/Proto Labs/TSI) +20, commute under 30mi +20, relevant to DFMEA/QMS/product dev +20, strong entry salary +10.
+Scoring: title matches (Mechanical/Design/Quality/Manufacturing/Product Development/Application/Process/Test-Validation/Supplier Quality/Product/Cost/R&D/NPI/Development/Test Engineer) +30, target company (Toro/Polaris/Graco/Donaldson/Medtronic/Boston Scientific/3M/Stratasys/Proto Labs/TSI) +20, commute under 30mi +20, relevant to DFMEA/QMS/product dev +20, strong entry salary +10.
 Return ONLY the JSON array."""
 
     with httpx.Client(timeout=120.0) as client:
