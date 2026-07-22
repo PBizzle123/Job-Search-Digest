@@ -12,6 +12,7 @@ TO_EMAIL = os.environ["TO_EMAIL"]
 PAGES_URL = os.environ.get("PAGES_URL", "")
 
 SEEN_JOBS_PATH = "data/seen_jobs.json"
+BATCH_SIZE = 15
 
 TARGET_COMPANIES = ["Toro","Polaris","Graco","Donaldson","Medtronic",
                      "Boston Scientific","3M","Stratasys","Proto Labs","TSI"]
@@ -110,18 +111,18 @@ def mark_new_jobs(jobs, seen):
             j["is_new"] = False
     return new_count
 
-def score_jobs(jobs):
-    jobs_summary = "\n".join(
-        f"{i+1}. \"{j['title']}\" at {j['company']} in {j['location']}. Salary: {j['salary']}. "
-        f"Responsibilities: {'; '.join(j['responsibilities']) or j['description'][:150]}"
-        for i, j in enumerate(jobs)
-    )
-
-    system_prompt = """You are a job search assistant for Peter, a mechanical engineering student graduating December 2025, interning at The Toro Company in Bloomington MN with DFMEA/PDRA/QMS experience. He lives in Minnetrista MN, 30-mile commute limit.
+SYSTEM_PROMPT = """You are a job search assistant for Peter, a mechanical engineering student graduating December 2025, interning at The Toro Company in Bloomington MN with DFMEA/PDRA/QMS experience. He lives in Minnetrista MN, 30-mile commute limit.
 Distance refs from Minnetrista: Polaris Medina 8mi, Proto Labs Maple Plain 10mi, Eden Prairie 15mi, Toro Bloomington 18mi, Donaldson Bloomington 20mi, Graco Minneapolis 22mi, Medtronic Fridley 25mi, 3M Maplewood 30mi.
 Respond ONLY with a valid JSON array, no markdown, no explanation."""
 
-    user_msg = f"""Score and rank these {len(jobs)} jobs for Peter. Return a JSON array of {len(jobs)} objects in the same order.
+def score_batch(jobs_batch, batch_num):
+    jobs_summary = "\n".join(
+        f"{i+1}. \"{j['title']}\" at {j['company']} in {j['location']}. Salary: {j['salary']}. "
+        f"Responsibilities: {'; '.join(j['responsibilities']) or j['description'][:150]}"
+        for i, j in enumerate(jobs_batch)
+    )
+
+    user_msg = f"""Score and rank these {len(jobs_batch)} jobs for Peter. Return a JSON array of {len(jobs_batch)} objects in the same order.
 
 {jobs_summary}
 
@@ -129,39 +130,59 @@ Each object: {{"score": number 0-100, "commuteMi": "estimate", "whyFit": "1 sent
 Scoring: title matches (Mechanical/Design/Quality/Manufacturing/Product Development/Application/Process/Test-Validation/Supplier Quality/Product/Cost/R&D/NPI/Development/Test Engineer) +30, target company (Toro/Polaris/Graco/Donaldson/Medtronic/Boston Scientific/3M/Stratasys/Proto Labs/TSI) +20, commute under 30mi +20, relevant to DFMEA/QMS/product dev +20, strong entry salary +10.
 Return ONLY the JSON array."""
 
-    with httpx.Client(timeout=120.0) as client:
-        resp = client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 4000,
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": user_msg}]
-            }
-        )
-        data = resp.json()
-        if data.get("error"):
-            print("Claude error:", data["error"])
-            return jobs
-        raw = data["content"][0]["text"]
-        match = re.search(r'\[[\s\S]*\]', raw)
-        if not match:
-            return jobs
-        try:
-            scores = json.loads(match.group())
-            for i, j in enumerate(jobs):
+    try:
+        with httpx.Client(timeout=90.0) as client:
+            resp = client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 3000,
+                    "system": SYSTEM_PROMPT,
+                    "messages": [{"role": "user", "content": user_msg}]
+                }
+            )
+            data = resp.json()
+            if data.get("error"):
+                print(f"Batch {batch_num}: Claude error: {data['error']}")
+                return None
+            raw = data["content"][0]["text"]
+            match = re.search(r'\[[\s\S]*\]', raw)
+            if not match:
+                print(f"Batch {batch_num}: no JSON array found in response (likely truncated). First 200 chars: {raw[:200]}")
+                return None
+            try:
+                return json.loads(match.group())
+            except Exception as e:
+                print(f"Batch {batch_num}: JSON parse error: {e}")
+                return None
+    except Exception as e:
+        print(f"Batch {batch_num}: request failed: {e}")
+        return None
+
+def score_jobs(jobs):
+    total_batches = (len(jobs) + BATCH_SIZE - 1) // BATCH_SIZE
+    scored_count = 0
+    for start in range(0, len(jobs), BATCH_SIZE):
+        batch = jobs[start:start + BATCH_SIZE]
+        batch_num = start // BATCH_SIZE + 1
+        print(f"Scoring batch {batch_num} of {total_batches} ({len(batch)} jobs)...")
+        scores = score_batch(batch, batch_num)
+        if scores:
+            for i, j in enumerate(batch):
                 if i < len(scores):
                     j["score"] = scores[i].get("score", 50)
                     j["commuteMi"] = scores[i].get("commuteMi", "?")
                     j["whyFit"] = scores[i].get("whyFit", "")
-        except Exception as e:
-            print("Parse error:", e)
-        return jobs
+                    scored_count += 1
+        else:
+            print(f"Batch {batch_num} failed — those {len(batch)} jobs will show without a score.")
+    print(f"Successfully scored {scored_count} of {len(jobs)} jobs")
+    return jobs
 
 def badge_color(score):
     if score >= 80:
